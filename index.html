@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="気象庁の地震情報を自動表示する地震情報ページ">
+  <title>地震情報</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #0b1020; color: #eef2ff; }
+    main { max-width: 1000px; margin: auto; padding: 24px; }
+    header { display:flex; justify-content:space-between; gap:16px; align-items:end; flex-wrap:wrap; }
+    h1 { margin:0; font-size:2rem; }
+    .sub { color:#aab4d0; margin:.4rem 0 0; }
+    #status { color:#8fa1c9; font-size:.9rem; }
+    .card { margin-top:20px; padding:20px; border:1px solid #26304d; border-radius:16px; background:#121a30; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; }
+    .item { padding:14px; background:#0d1427; border-radius:12px; }
+    .label { color:#8fa1c9; font-size:.85rem; }
+    .value { margin-top:4px; font-size:1.15rem; font-weight:700; }
+    table { width:100%; border-collapse:collapse; }
+    th,td { text-align:left; padding:10px 8px; border-bottom:1px solid #26304d; }
+    th { color:#aab4d0; font-weight:600; }
+    .empty { color:#8fa1c9; }
+    footer { margin-top:20px; color:#7f8bad; font-size:.85rem; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>地震情報</h1>
+      <p class="sub">気象庁の公開情報をもとに自動更新</p>
+    </div>
+    <div id="status">読み込み中…</div>
+  </header>
+
+  <section id="latest" class="card">
+    <h2>最新の地震</h2>
+    <p class="empty">データを取得しています…</p>
+  </section>
+
+  <section class="card">
+    <h2>地震履歴</h2>
+    <div id="history" class="empty">データを取得しています…</div>
+  </section>
+
+  <footer>情報源：気象庁　※公開情報の更新状況により表示まで時間差が生じる場合があります。</footer>
+</main>
+<script>
+const latest = document.querySelector('#latest');
+const history = document.querySelector('#history');
+const status = document.querySelector('#status');
+
+const esc = s => String(s ?? '').replace(/[&<>\"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));
+const fmt = value => value == null || value === '' ? '未確認' : esc(value);
+
+function render(data) {
+  const eqs = Array.isArray(data.earthquakes) ? data.earthquakes : [];
+  status.textContent = data.updated_at ? `最終更新: ${data.updated_at}` : 'データ未更新';
+  if (!eqs.length) {
+    latest.innerHTML = '<h2>最新の地震</h2><p class="empty">まだ地震情報がありません。</p>';
+    history.innerHTML = '<p class="empty">まだ地震情報がありません。</p>';
+    return;
+  }
+  const e = eqs[0];
+  latest.innerHTML = `<h2>最新の地震</h2>
+    <div class="grid">
+      <div class="item"><div class="label">発生時刻</div><div class="value">${fmt(e.time)}</div></div>
+      <div class="item"><div class="label">震源</div><div class="value">${fmt(e.region)}</div></div>
+      <div class="item"><div class="label">最大震度</div><div class="value">${fmt(e.max_intensity)}</div></div>
+      <div class="item"><div class="label">マグニチュード</div><div class="value">${fmt(e.magnitude)}</div></div>
+      <div class="item"><div class="label">深さ</div><div class="value">${fmt(e.depth)}</div></div>
+      <div class="item"><div class="label">津波</div><div class="value">${fmt(e.tsunami)}</div></div>
+    </div>`;
+
+  history.innerHTML = `<table><thead><tr><th>時刻</th><th>震源</th><th>最大震度</th><th>M</th><th>深さ</th></tr></thead><tbody>
+    ${eqs.map(e => `<tr><td>${fmt(e.time)}</td><td>${fmt(e.region)}</td><td>${fmt(e.max_intensity)}</td><td>${fmt(e.magnitude)}</td><td>${fmt(e.depth)}</td></tr>`).join('')}
+  </tbody></table>`;
+}
+
+async function load() {
+  try {
+    const r = await fetch(`data.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    render(await r.json());
+  } catch (e) {
+    status.textContent = `取得失敗: ${e.message}`;
+  }
+}
+load();
+setInterval(load, 10000);
+</script>
+</body>
+</html>
