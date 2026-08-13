@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
-"""JMA earthquake monitor -> data.json -> git commit/push.
-
-Run this script continuously on the machine that should publish updates.
-Git credentials/remotes are intentionally handled by Git itself; no token is stored here.
-"""
+"""JMA earthquake monitor -> data.json -> git commit/push."""
 
 from __future__ import annotations
 
 import json
 import subprocess
 import time
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -36,20 +33,37 @@ def find_text(root: ET.Element, paths: list[str]) -> str:
 
 
 def fetch(url: str) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "zisinnzyouhou---/1.0"})
-    with urllib.request.urlopen(req, timeout=20) as response:
-        return response.read()
+    """Fetch bytes with retries so a transient connection close does not kill monitoring."""
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "zisinnzyouhou---/1.0",
+                    "Accept": "application/xml,text/xml,*/*;q=0.1",
+                    "Connection": "close",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=30) as response:
+                return response.read()
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+    raise RuntimeError(f"fetch failed: {last_error}")
 
 
 def get_feed_links() -> list[str]:
     root = ET.fromstring(fetch(FEED_URL))
     links: list[str] = []
     for entry in root.findall(".//{*}entry"):
-        title = text(entry.find("{*}title"))
         link = entry.find("{*}link")
         href = link.attrib.get("href", "") if link is not None else ""
-        # VXSE53 = earthquake hypocenter/intensity information.
-        if "震源・震度" in title and href:
+        # Read the actual JMA product code from the URL. Avoid relying on the
+        # feed's human-readable title, which may be mangled by an intermediate
+        # console/clipboard encoding conversion.
+        if "_VXSE53_" in href:
             links.append(href)
     return links
 
@@ -57,14 +71,15 @@ def get_feed_links() -> list[str]:
 def parse_report(xml_bytes: bytes) -> dict | None:
     root = ET.fromstring(xml_bytes)
 
-    # Reject non-earthquake reports if the feed ever returns an unexpected item.
     info_type = find_text(root, [".//{*}Head/{*}InfoType"])
     if info_type and "地震" not in info_type:
         return None
 
-    report_id = find_text(root, [".//{*}Head/{*}EventID", ".//{*}Head/{*}Serial"])
+    report_id = find_text(root, [
+        ".//{*}Head/{*}EventID",
+        ".//{*}Head/{*}Serial",
+    ])
     origin_time = find_text(root, [
-        ".//{*}Body/{*}Earthquake/{*}OriginTime",
         ".//{*}Body/{*}Earthquake/{*}OriginTime",
     ])
     region = find_text(root, [
@@ -75,21 +90,29 @@ def parse_report(xml_bytes: bytes) -> dict | None:
         ".//{*}Body/{*}Earthquake/{*}Magnitude",
     ])
 
-    # JMA coordinates are typically text such as +36.1+140.1-50000/
     depth = ""
     coord = root.find(".//{*}Body/{*}Earthquake/{*}Hypocenter/{*}Area/{*}Coordinate")
     if coord is not None:
         raw = text(coord)
-        parts = raw.split("/")
-        if parts:
-            last = parts[-1]
-            if last.endswith("/"):
-                last = last[:-1]
-            # Find the depth-like negative number after longitude.
-            nums = last.replace("+", " ").replace("-", " -").split()
-            for item in reversed(nums):
-                if item.lstrip("-").isdigit() and abs(int(item)) >= 100:
-                    meters = abs(int(item))
+        # Typical JMA format: +36.1+140.1-50000/
+        for part in raw.split("/"):
+            part = part.strip()
+            if not part:
+                continue
+            last_number = ""
+            current = ""
+            for ch in part:
+                if ch.isdigit() or (ch == "-" and not current):
+                    current += ch
+                else:
+                    if current.lstrip("-").isdigit():
+                        last_number = current
+                    current = ""
+            if current.lstrip("-").isdigit():
+                last_number = current
+            if last_number and last_number.lstrip("-").isdigit():
+                meters = abs(int(last_number))
+                if meters >= 100:
                     depth = f"{meters // 1000} km"
                     break
 
@@ -148,7 +171,6 @@ def publish() -> None:
 
     commit = git("commit", "-m", "Update earthquake information")
     if commit.returncode != 0:
-        # Nothing to commit is harmless.
         if "nothing to commit" in (commit.stdout + commit.stderr).lower():
             return
         raise RuntimeError(commit.stderr.strip() or "git commit failed")
@@ -170,7 +192,6 @@ def main() -> None:
             known = {item.get("id") for item in current.get("earthquakes", [])}
             new_items: list[dict] = []
 
-            # Newest feed entries are normally first. Parse only unseen reports.
             for link in links:
                 try:
                     item = parse_report(fetch(link))
