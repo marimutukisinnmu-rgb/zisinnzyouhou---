@@ -12,7 +12,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 
-FEED_URL = "https://www.data.jma.go.jp/developer/xml/feed/eqvol_l.xml"
+# Use the local XML mirror/server for testing and monitoring.
+FEED_URL = "http://localhost:8000/eqvol_l.xml"
 POLL_SECONDS = 10
 HISTORY_LIMIT = 30
 ROOT = Path(__file__).resolve().parent
@@ -33,7 +34,7 @@ def find_text(root: ET.Element, paths: list[str]) -> str:
 
 
 def fetch(url: str) -> bytes:
-    """Fetch bytes with retries so a transient connection close does not kill monitoring."""
+    """Fetch bytes with retries so a transient connection failure does not kill monitoring."""
     last_error: Exception | None = None
     for attempt in range(3):
         try:
@@ -61,8 +62,7 @@ def get_feed_links() -> list[str]:
         link = entry.find("{*}link")
         href = link.attrib.get("href", "") if link is not None else ""
         # Read the actual JMA product code from the URL. Avoid relying on the
-        # feed's human-readable title, which may be mangled by an intermediate
-        # console/clipboard encoding conversion.
+        # feed's human-readable title, which may be mangled by encoding conversion.
         if "_VXSE53_" in href:
             links.append(href)
     return links
