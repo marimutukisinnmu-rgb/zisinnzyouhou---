@@ -12,12 +12,20 @@
 
 GitHub Actionsは使用しません。
 
-`monitor.py` を常時動作させるPCで実行します。10秒ごとに気象庁の地震・火山XMLフィードを確認し、新しい「震源・震度に関する情報」を見つけたときだけ `data.json` を更新して、次のGit操作を行います。
+`monitor.py` を常時動作させるPCで実行します。61秒ごとに気象庁の高頻度（地震火山）XMLフィードを確認し、新しい「震源・震度に関する情報」を見つけたときだけ `data.json` を更新して、次のGit操作を行います。
 
 ```text
 気象庁
   ↓
+https://www.data.jma.go.jp/developer/xml/feed/eqvol.xml
+  ↓
 monitor.py
+  ↓
+<entry> の title = 「震源・震度に関する情報」
+  ↓
+<link type="application/xml" href="...">
+  ↓
+個別JMAXML
   ↓
 data.json
   ↓
@@ -27,6 +35,8 @@ git push
   ↓
 GitHub Pages
 ```
+
+個別の地震XMLは `<link>` の `href` を使用して取得します。`eqvol.xml` には降灰予報など他の情報も含まれますが、地震監視では「震源・震度に関する情報」のentryだけを対象にします。
 
 GitHubへの認証情報はスクリプトに保存せず、PC側のGit認証を使用します。
 
