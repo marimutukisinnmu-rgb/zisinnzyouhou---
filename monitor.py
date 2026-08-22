@@ -12,9 +12,9 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Use the local XML mirror/server for testing and monitoring.
-FEED_URL = "http://localhost:8000/eqvol_l.xml"
-POLL_SECONDS = 10
+# JMA high-frequency earthquake/volcano Atom feed.
+FEED_URL = "https://www.data.jma.go.jp/developer/xml/feed/eqvol.xml"
+POLL_SECONDS = 61
 HISTORY_LIMIT = 30
 ROOT = Path(__file__).resolve().parent
 DATA_FILE = ROOT / "data.json"
@@ -56,15 +56,23 @@ def fetch(url: str) -> bytes:
 
 
 def get_feed_links() -> list[str]:
+    """Return earthquake product URLs from Atom <link href="..."> elements."""
     root = ET.fromstring(fetch(FEED_URL))
     links: list[str] = []
+
     for entry in root.findall(".//{*}entry"):
-        link = entry.find("{*}link")
-        href = link.attrib.get("href", "") if link is not None else ""
-        # Read the actual JMA product code from the URL. Avoid relying on the
-        # feed's human-readable title, which may be mangled by encoding conversion.
-        if "_VXSE53_" in href:
-            links.append(href)
+        title = text(entry.find("{*}title"))
+        if title != "震源・震度に関する情報":
+            continue
+
+        # Use the Atom link href as the product URL.
+        for link in entry.findall("{*}link"):
+            if link.attrib.get("type") == "application/xml":
+                href = link.attrib.get("href", "").strip()
+                if href:
+                    links.append(href)
+                    break
+
     return links
 
 
@@ -92,6 +100,8 @@ def parse_report(xml_bytes: bytes) -> dict | None:
 
     depth = ""
     coord = root.find(".//{*}Body/{*}Earthquake/{*}Hypocenter/{*}Area/{*}Coordinate")
+    if coord is None:
+        coord = root.find(".//{*}Body/{*}Earthquake/{*}Hypocenter/{*}Area/{*}{*}Coordinate")
     if coord is not None:
         raw = text(coord)
         # Typical JMA format: +36.1+140.1-50000/
