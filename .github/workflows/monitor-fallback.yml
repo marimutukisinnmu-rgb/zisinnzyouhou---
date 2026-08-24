@@ -62,6 +62,10 @@ jobs:
           print(f"alive={str(alive).lower()}")
           PY
 
+      - name: Monitor is alive
+        if: steps.heartbeat.outputs.ALIVE == 'true'
+        run: echo "monitor.py heartbeat is fresh; no fallback needed."
+
       - name: Set up Python
         if: steps.heartbeat.outputs.ALIVE != 'true'
         uses: actions/setup-python@v5
