@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -12,12 +14,15 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 
-# JMA high-frequency earthquake/volcano Atom feed.
 FEED_URL = "https://www.data.jma.go.jp/developer/xml/feed/eqvol.xml"
 POLL_SECONDS = 61
 HISTORY_LIMIT = 30
 ROOT = Path(__file__).resolve().parent
 DATA_FILE = ROOT / "data.json"
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 def text(node: ET.Element | None, default: str = "") -> str:
@@ -34,7 +39,7 @@ def find_text(root: ET.Element, paths: list[str]) -> str:
 
 
 def fetch(url: str) -> bytes:
-    """Fetch bytes with retries so a transient connection failure does not kill monitoring."""
+    """Fetch bytes with retries so transient connection failures do not stop monitoring."""
     last_error: Exception | None = None
     for attempt in range(3):
         try:
@@ -56,31 +61,24 @@ def fetch(url: str) -> bytes:
 
 
 def get_feed_links() -> list[str]:
-    """Return earthquake product URLs from Atom <link href="..."> elements."""
     root = ET.fromstring(fetch(FEED_URL))
     links: list[str] = []
-
     for entry in root.findall(".//{*}entry"):
         title = text(entry.find("{*}title"))
         if title != "震源・震度に関する情報":
             continue
-
-        # Use the Atom link href as the product URL.
         for link in entry.findall("{*}link"):
             if link.attrib.get("type") == "application/xml":
                 href = link.attrib.get("href", "").strip()
                 if href:
                     links.append(href)
                     break
-
     return links
 
 
 def parse_report(xml_bytes: bytes) -> dict | None:
     root = ET.fromstring(xml_bytes)
 
-    # JMA uses InfoType for the report status (e.g. "発表") and
-    # InfoKind for the actual kind (e.g. "地震情報").
     info_kind = find_text(root, [".//{*}Head/{*}InfoKind"])
     if info_kind and "地震" not in info_kind:
         return None
@@ -106,7 +104,6 @@ def parse_report(xml_bytes: bytes) -> dict | None:
         coord = root.find(".//{*}Body/{*}Earthquake/{*}Hypocenter/{*}Area/{*}{*}Coordinate")
     if coord is not None:
         raw = text(coord)
-        # Typical JMA format: +36.1+140.1-50000/
         for part in raw.split("/"):
             part = part.strip()
             if not part:
@@ -156,11 +153,17 @@ def parse_report(xml_bytes: bytes) -> dict | None:
 
 def load_data() -> dict:
     if not DATA_FILE.exists():
-        return {"updated_at": None, "earthquakes": []}
+        return {"updated_at": None, "heartbeat": None, "earthquakes": []}
     try:
-        return json.loads(DATA_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {"updated_at": None, "earthquakes": []}
+        data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("data.json root must be an object")
+        data.setdefault("updated_at", None)
+        data.setdefault("heartbeat", None)
+        data.setdefault("earthquakes", [])
+        return data
+    except (json.JSONDecodeError, OSError, ValueError):
+        return {"updated_at": None, "heartbeat": None, "earthquakes": []}
 
 
 def save_data(data: dict) -> None:
@@ -181,9 +184,10 @@ def publish() -> None:
     if add.returncode != 0:
         raise RuntimeError(add.stderr.strip() or "git add failed")
 
-    commit = git("commit", "-m", "Update earthquake information")
+    commit = git("commit", "-m", "Update earthquake monitor heartbeat")
     if commit.returncode != 0:
-        if "nothing to commit" in (commit.stdout + commit.stderr).lower():
+        output = (commit.stdout + commit.stderr).lower()
+        if "nothing to commit" in output:
             return
         raise RuntimeError(commit.stderr.strip() or "git commit failed")
 
@@ -192,43 +196,54 @@ def publish() -> None:
         raise RuntimeError(push.stderr.strip() or "git push failed")
 
 
-def main() -> None:
+def run_once() -> bool:
+    current = load_data()
+    known = {item.get("id") for item in current.get("earthquakes", [])}
+    new_items: list[dict] = []
+
+    links = get_feed_links()
+    for link in links:
+        try:
+            item = parse_report(fetch(link))
+        except Exception as exc:
+            print(f"parse failed: {exc}")
+            continue
+        if item and item["id"] not in known:
+            new_items.append(item)
+            known.add(item["id"])
+
+    if new_items:
+        earthquakes = new_items + current.get("earthquakes", [])
+        current["earthquakes"] = earthquakes[:HISTORY_LIMIT]
+        current["updated_at"] = now_iso()
+        print(f"New earthquake reports: {len(new_items)}")
+    current["heartbeat"] = now_iso()
+    save_data(current)
+    return bool(new_items)
+
+
+def main(once: bool = False) -> None:
     print("JMA earthquake monitor started.")
     print(f"Feed: {FEED_URL}")
     print(f"Polling: every {POLL_SECONDS}s")
 
+    if once:
+        run_once()
+        print("One-shot monitor finished.")
+        return
+
     while True:
         try:
-            links = get_feed_links()
-            current = load_data()
-            known = {item.get("id") for item in current.get("earthquakes", [])}
-            new_items: list[dict] = []
-
-            for link in links:
-                try:
-                    item = parse_report(fetch(link))
-                except Exception as exc:
-                    print(f"parse failed: {exc}")
-                    continue
-                if item and item["id"] not in known:
-                    new_items.append(item)
-                    known.add(item["id"])
-
-            if new_items:
-                earthquakes = new_items + current.get("earthquakes", [])
-                current["earthquakes"] = earthquakes[:HISTORY_LIMIT]
-                current["updated_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-                save_data(current)
-                print(f"New earthquake reports: {len(new_items)}")
-                publish()
-                print("Committed and pushed.")
-
+            changed = run_once()
+            publish()
+            print("Heartbeat pushed." if not changed else "Committed and pushed.")
         except Exception as exc:
-            # Keep monitoring after transient network/Git errors.
             print(f"monitor error: {exc}")
-
         time.sleep(POLL_SECONDS)
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--once", action="store_true", help="Run one monitoring cycle and exit.")
+    args = parser.parse_args()
+    main(once=args.once)
