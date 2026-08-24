@@ -22,29 +22,30 @@ jobs:
         run: |
           python - <<'PY'
           import json
+          import os
           from datetime import datetime, timezone
           from pathlib import Path
 
           data = json.loads(Path("data.json").read_text(encoding="utf-8"))
           stamp = data.get("heartbeat")
-          if not stamp:
-              print("alive=false")
-              raise SystemExit(0)
+          alive = False
 
-          try:
-              last = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-              age = (datetime.now(timezone.utc) - last.astimezone(timezone.utc)).total_seconds()
-          except Exception:
-              age = 999999
+          if stamp:
+              try:
+                  last = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                  age = (datetime.now(timezone.utc) - last.astimezone(timezone.utc)).total_seconds()
+                  alive = age < 300
+                  print(f"heartbeat={stamp}")
+                  print(f"age_seconds={age:.0f}")
+              except Exception as exc:
+                  print(f"Invalid heartbeat: {exc}")
+          else:
+              print("No heartbeat found; fallback is required.")
 
-          alive = age < 300
-          print(f"heartbeat={stamp}")
-          print(f"age_seconds={age:.0f}")
-          print(f"alive={str(alive).lower()}")
-          with open("heartbeat.env", "w", encoding="utf-8") as f:
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
               f.write(f"ALIVE={'true' if alive else 'false'}\n")
+          print(f"alive={str(alive).lower()}")
           PY
-          cat heartbeat.env >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         if: steps.heartbeat.outputs.ALIVE != 'true'
