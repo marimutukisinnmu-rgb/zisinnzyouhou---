@@ -79,8 +79,10 @@ def get_feed_links() -> list[str]:
 def parse_report(xml_bytes: bytes) -> dict | None:
     root = ET.fromstring(xml_bytes)
 
-    info_type = find_text(root, [".//{*}Head/{*}InfoType"])
-    if info_type and "地震" not in info_type:
+    # JMA uses InfoType for the report status (e.g. "発表") and
+    # InfoKind for the actual kind (e.g. "地震情報").
+    info_kind = find_text(root, [".//{*}Head/{*}InfoKind"])
+    if info_kind and "地震" not in info_kind:
         return None
 
     report_id = find_text(root, [
