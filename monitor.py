@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import sys
 import time
 import urllib.error
 import urllib.request
@@ -217,6 +216,8 @@ def run_once() -> bool:
         current["earthquakes"] = earthquakes[:HISTORY_LIMIT]
         current["updated_at"] = now_iso()
         print(f"New earthquake reports: {len(new_items)}")
+
+    # Heartbeat is intentionally updated every monitoring cycle, even without earthquakes.
     current["heartbeat"] = now_iso()
     save_data(current)
     return bool(new_items)
