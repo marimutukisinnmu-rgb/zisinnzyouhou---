@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  TZ: Asia/Tokyo
+
 jobs:
   fallback:
     runs-on: ubuntu-latest
@@ -15,6 +18,10 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT }}
+          persist-credentials: true
+          fetch-depth: 1
 
       - name: Check monitor heartbeat
         id: heartbeat
@@ -26,18 +33,26 @@ jobs:
           from datetime import datetime, timezone
           from pathlib import Path
 
-          data = json.loads(Path("data.json").read_text(encoding="utf-8"))
-          stamp = data.get("heartbeat")
+          path = Path("data.json")
           alive = False
+
+          try:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              stamp = data.get("heartbeat")
+          except (OSError, json.JSONDecodeError) as exc:
+              stamp = None
+              print(f"Could not read data.json: {exc}")
 
           if stamp:
               try:
                   last = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                  if last.tzinfo is None:
+                      last = last.replace(tzinfo=timezone.utc)
                   age = (datetime.now(timezone.utc) - last.astimezone(timezone.utc)).total_seconds()
-                  alive = age < 300
+                  alive = 0 <= age < 300
                   print(f"heartbeat={stamp}")
                   print(f"age_seconds={age:.0f}")
-              except Exception as exc:
+              except (TypeError, ValueError) as exc:
                   print(f"Invalid heartbeat: {exc}")
           else:
               print("No heartbeat found; fallback is required.")
@@ -59,6 +74,7 @@ jobs:
 
       - name: Commit fallback update
         if: steps.heartbeat.outputs.ALIVE != 'true'
+        shell: bash
         run: |
           if git diff --quiet -- data.json; then
             echo "No data change."
@@ -68,4 +84,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data.json
           git commit -m "Fallback earthquake monitor update"
-          git push
+          git push origin HEAD:main
