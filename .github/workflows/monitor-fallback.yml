@@ -1,0 +1,70 @@
+name: Earthquake monitor fallback
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fallback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check monitor heartbeat
+        id: heartbeat
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          data = json.loads(Path("data.json").read_text(encoding="utf-8"))
+          stamp = data.get("heartbeat")
+          if not stamp:
+              print("alive=false")
+              raise SystemExit(0)
+
+          try:
+              last = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+              age = (datetime.now(timezone.utc) - last.astimezone(timezone.utc)).total_seconds()
+          except Exception:
+              age = 999999
+
+          alive = age < 300
+          print(f"heartbeat={stamp}")
+          print(f"age_seconds={age:.0f}")
+          print(f"alive={str(alive).lower()}")
+          with open("heartbeat.env", "w", encoding="utf-8") as f:
+              f.write(f"ALIVE={'true' if alive else 'false'}\n")
+          PY
+          cat heartbeat.env >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.heartbeat.outputs.ALIVE != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run fallback monitor
+        if: steps.heartbeat.outputs.ALIVE != 'true'
+        run: python monitor.py --once
+
+      - name: Commit fallback update
+        if: steps.heartbeat.outputs.ALIVE != 'true'
+        run: |
+          if git diff --quiet -- data.json; then
+            echo "No data change."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data.json
+          git commit -m "Fallback earthquake monitor update"
+          git push
