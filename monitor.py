@@ -15,6 +15,7 @@ from pathlib import Path
 
 FEED_URL = "https://www.data.jma.go.jp/developer/xml/feed/eqvol.xml"
 POLL_SECONDS = 61
+PUBLISH_RETRY_SECONDS = 10
 HISTORY_LIMIT = 30
 ROOT = Path(__file__).resolve().parent
 DATA_FILE = ROOT / "data.json"
@@ -38,7 +39,6 @@ def find_text(root: ET.Element, paths: list[str]) -> str:
 
 
 def fetch(url: str) -> bytes:
-    """Fetch bytes with retries so transient connection failures do not stop monitoring."""
     last_error: Exception | None = None
     for attempt in range(3):
         try:
@@ -77,7 +77,6 @@ def get_feed_links() -> list[str]:
 
 def parse_report(xml_bytes: bytes) -> dict | None:
     root = ET.fromstring(xml_bytes)
-
     info_kind = find_text(root, [".//{*}Head/{*}InfoKind"])
     if info_kind and "地震" not in info_kind:
         return None
@@ -128,7 +127,6 @@ def parse_report(xml_bytes: bytes) -> dict | None:
         ".//{*}Body/{*}Intensity/{*}Observation/{*}MaxInt",
         ".//{*}Body/{*}Intensity/{*}Observation/{*}MaxInt/{*}MaxInt",
     ])
-
     tsunami = find_text(root, [
         ".//{*}Body/{*}Comments/{*}ForecastComment/{*}Text",
         ".//{*}Body/{*}Comments/{*}WarningComment/{*}Text",
@@ -179,7 +177,7 @@ def git(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def publish() -> None:
-    """Commit and push, rebasing onto remote main to avoid Actions/PC races."""
+    """Commit and push, rebasing onto remote main before each push attempt."""
     add = git("add", "data.json")
     if add.returncode != 0:
         raise RuntimeError(add.stderr.strip() or "git add failed")
@@ -245,10 +243,19 @@ def main(once: bool = False) -> None:
     while True:
         try:
             changed = run_once()
-            publish()
-            print("Heartbeat pushed." if not changed else "Committed and pushed.")
+            while True:
+                try:
+                    publish()
+                    print("Heartbeat pushed." if not changed else "Committed and pushed.")
+                    break
+                except Exception as exc:
+                    print(f"publish error: {exc}")
+                    print(f"Retrying publish in {PUBLISH_RETRY_SECONDS}s...")
+                    time.sleep(PUBLISH_RETRY_SECONDS)
         except Exception as exc:
             print(f"monitor error: {exc}")
+            time.sleep(PUBLISH_RETRY_SECONDS)
+            continue
         time.sleep(POLL_SECONDS)
 
 
