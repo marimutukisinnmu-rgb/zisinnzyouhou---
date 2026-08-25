@@ -179,6 +179,7 @@ def git(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def publish() -> None:
+    """Commit and push, rebasing onto remote main to avoid Actions/PC races."""
     add = git("add", "data.json")
     if add.returncode != 0:
         raise RuntimeError(add.stderr.strip() or "git add failed")
@@ -189,6 +190,15 @@ def publish() -> None:
         if "nothing to commit" in output:
             return
         raise RuntimeError(commit.stderr.strip() or "git commit failed")
+
+    fetch_remote = git("fetch", "origin", "main")
+    if fetch_remote.returncode != 0:
+        raise RuntimeError(fetch_remote.stderr.strip() or "git fetch failed")
+
+    rebase = git("rebase", "origin/main")
+    if rebase.returncode != 0:
+        git("rebase", "--abort")
+        raise RuntimeError(rebase.stderr.strip() or "git rebase failed")
 
     push = git("push", "origin", "main")
     if push.returncode != 0:
@@ -217,7 +227,6 @@ def run_once() -> bool:
         current["updated_at"] = now_iso()
         print(f"New earthquake reports: {len(new_items)}")
 
-    # Heartbeat is intentionally updated every monitoring cycle, even without earthquakes.
     current["heartbeat"] = now_iso()
     save_data(current)
     return bool(new_items)
