@@ -177,7 +177,7 @@ def git(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def publish() -> None:
-    """Commit and push, rebasing onto remote main before each push attempt."""
+    """Commit local data, then rebase onto remote main before every push."""
     add = git("add", "data.json")
     if add.returncode != 0:
         raise RuntimeError(add.stderr.strip() or "git add failed")
@@ -185,10 +185,11 @@ def publish() -> None:
     commit = git("commit", "-m", "Update earthquake monitor heartbeat")
     if commit.returncode != 0:
         output = (commit.stdout + commit.stderr).lower()
-        if "nothing to commit" in output:
-            return
-        raise RuntimeError(commit.stderr.strip() or "git commit failed")
+        if "nothing to commit" not in output:
+            raise RuntimeError(commit.stderr.strip() or "git commit failed")
 
+    # The remote may have advanced after the previous attempt. Always refresh
+    # and rebase, even when the local commit already exists from a failed push.
     fetch_remote = git("fetch", "origin", "main")
     if fetch_remote.returncode != 0:
         raise RuntimeError(fetch_remote.stderr.strip() or "git fetch failed")
